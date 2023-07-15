@@ -1,91 +1,116 @@
 use std::cell::RefCell;
 use std::iter::FusedIterator;
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 /// An implementation of a doubly linked-list. Not thread-safe. Note that the data items contained
 /// within nodes cannot be changed after they have been added to the linked-list.
 pub struct LinkedList<T> {
-    head: Link<T>,
-    tail: Link<T>,
+    head_and_tail: Option<[Link<T>; 2]>,
     len: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Where {
+    Head,
+    Tail,
+}
+
+use Where::*;
+
+impl From<Where> for usize {
+    fn from(w: Where) -> Self {
+        match w {
+            Head => 0,
+            Tail => 1,
+        }
+    }
 }
 
 impl<T> LinkedList<T> {
     /// Creates an empty LinkedList.
     pub fn new() -> LinkedList<T> {
         LinkedList {
-            head: None,
-            tail: None,
+            head_and_tail: None,
             len: 0,
+        }
+    }
+
+    fn push_helper(&mut self, data: T, where_to_update: Where) {
+        #[allow(clippy::type_complexity)]
+        let (setter1, setter2): (
+            fn(&mut Link<T>, other: Option<Link<T>>),
+            fn(&mut Link<T>, other: Option<Link<T>>),
+        ) = match where_to_update {
+            Head => (set_prev, set_next),
+            Tail => (set_next, set_prev),
+        };
+
+        let mut new_node = Node::new_link(data);
+        self.len += 1;
+
+        match self.head_and_tail.as_mut() {
+            None => self.head_and_tail = Some([new_node.clone(), new_node]),
+            Some(head_and_tail) => {
+                let update_index: usize = where_to_update.into();
+                setter1(&mut head_and_tail[update_index], Some(new_node.clone()));
+                setter2(&mut new_node, Some(head_and_tail[update_index].clone()));
+                head_and_tail[update_index] = new_node;
+            }
         }
     }
 
     /// Pushes the data item to the end of the LinkedList.
     pub fn push(&mut self, data: T) {
-        let new_node: Link<T> = Node::new_link(data);
-        // Increase the len counter
-        self.len += 1;
-        // Handle case for empty list
-        if self.head.is_none() && self.tail.is_none() {
-            self.head = new_node.clone();
-            self.tail = new_node;
-            return;
-        }
-        // Update the tail to point at the new node and connect to the old tail
-        self.tail.as_ref().unwrap().borrow_mut().set_next(&new_node);
-        new_node.as_ref().unwrap().borrow_mut().set_prev(&self.tail);
-        self.tail = new_node;
+        self.push_helper(data, Tail)
     }
 
     /// Pushes the data item to the front of the LinkedList.
     pub fn push_front(&mut self, data: T) {
-        let new_node: Link<T> = Node::new_link(data);
-        // Increase the len counter
-        self.len += 1;
-        // Handle case for empty list
-        if self.head.is_none() && self.tail.is_none() {
-            self.head = new_node.clone();
-            self.tail = new_node;
-            return;
+        self.push_helper(data, Head)
+    }
+
+    fn pop_helper(&mut self, where_to_update: Where) -> Option<Rc<T>> {
+        #[allow(clippy::type_complexity)]
+        let (getter, setter): (
+            fn(&Node<T>) -> Option<Link<T>>,
+            fn(&mut Link<T>, other: Option<Link<T>>),
+        ) = match where_to_update {
+            Head => (Node::<T>::get_next, set_prev),
+            Tail => (Node::<T>::get_prev, set_next),
+        };
+        let mut need_to_zero_head_and_tail = false;
+        let popped = self.head_and_tail.as_mut().map(|head_and_tail| {
+            let update_index: usize = where_to_update.into();
+            let old = head_and_tail[update_index].clone();
+            let old = old.borrow();
+            match getter(old.deref()) {
+                None => need_to_zero_head_and_tail = true,
+                Some(link) => {
+                    head_and_tail[update_index] = link;
+                    setter(&mut head_and_tail[update_index], None);
+                }
+            }
+            let old_data = old.get_data();
+            self.len -= 1;
+            old_data
+        });
+        if need_to_zero_head_and_tail {
+            self.head_and_tail = None;
         }
-        // Update the head to point at the new node and connect to the old head
-        self.head.as_ref().unwrap().borrow_mut().set_prev(&new_node);
-        new_node.as_ref().unwrap().borrow_mut().set_next(&self.head);
-        self.head = new_node;
+        popped
     }
 
     /// Removes the last node from the LinkedList. Returns Some containing the value from the
     /// removed node, otherwise None.
     pub fn pop(&mut self) -> Option<Rc<T>> {
-        // Handle case for empty list
-        if self.head.is_none() && self.tail.is_none() {
-            return None;
-        }
-        // Update the tail to be the second-last node and return value contained in removed node
-        let old_tail = self.tail.clone();
-        self.tail = old_tail.as_ref().unwrap().borrow().get_prev();
-        self.tail.as_ref().unwrap().borrow_mut().set_next(&None);
-        let old_data = old_tail.as_ref().unwrap().borrow().get_data();
-        // Decrease the len counter
-        self.len -= 1;
-        Some(old_data)
+        self.pop_helper(Tail)
     }
 
     /// Removes the first node from the LinkedList. Returns Some containing the value from the
     /// removed node, otherwise None.
     pub fn pop_front(&mut self) -> Option<Rc<T>> {
-        // Handle case for empty list
-        if self.head.is_none() && self.tail.is_none() {
-            return None;
-        }
-        // Update head to be second node and return value contained in removed node
-        let old_head = self.head.clone();
-        self.head = old_head.as_ref().unwrap().borrow().get_next();
-        self.head.as_ref().unwrap().borrow_mut().set_prev(&None);
-        let old_data = old_head.as_ref().unwrap().borrow().get_data();
-        // Decrease the len counter
-        self.len -= 1;
-        Some(old_data)
+        self.pop_helper(Head)
     }
 
     /// Returns the number of items contained in the LinkedList.
@@ -100,7 +125,11 @@ impl<T> LinkedList<T> {
 
     /// Creates an iterator over the LinkedList.
     pub fn iter(&self) -> LinkedListIter<T> {
-        LinkedListIter::new(&self.head)
+        LinkedListIter::new(
+            self.head_and_tail
+                .as_ref()
+                .map(|head_and_tail| head_and_tail[0].clone()),
+        )
     }
 }
 
@@ -121,13 +150,32 @@ impl<T> IntoIterator for LinkedList<T> {
 }
 
 /// Represents a link from one node to another before or after it.
-type Link<T> = Option<Rc<RefCell<Box<Node<T>>>>>;
+type Link<T> = Rc<RefCell<Box<Node<T>>>>;
+
+/// Updates the previous node.
+fn set_helper<T>(
+    s: &mut Link<T>,
+    other: Option<Link<T>>,
+    setter: fn(&mut Node<T>, other: Option<Link<T>>),
+) {
+    setter(s.borrow_mut().deref_mut(), other)
+}
+
+/// Updates the previous node.
+fn set_prev<T>(s: &mut Link<T>, other: Option<Link<T>>) {
+    set_helper(s, other, Node::<T>::set_prev)
+}
+
+/// Updates the next node.
+fn set_next<T>(s: &mut Link<T>, other: Option<Link<T>>) {
+    set_helper(s, other, Node::<T>::set_next)
+}
 
 /// A node containing a data item and links to previous and next nodes.
 struct Node<T> {
     data: Rc<T>,
-    prev: Link<T>,
-    next: Link<T>,
+    prev: Option<Link<T>>,
+    next: Option<Link<T>>,
 }
 
 impl<T> Node<T> {
@@ -142,22 +190,22 @@ impl<T> Node<T> {
     }
 
     /// Updates the previous node.
-    fn set_prev(&mut self, other: &Link<T>) {
-        self.prev = other.clone();
+    fn set_prev(&mut self, other: Option<Link<T>>) {
+        self.prev = other;
     }
 
     /// Updates the next node.
-    fn set_next(&mut self, other: &Link<T>) {
-        self.next = other.clone();
+    fn set_next(&mut self, other: Option<Link<T>>) {
+        self.next = other;
     }
 
     /// Gets the previous link from the Node via cloning.
-    fn get_prev(&self) -> Link<T> {
+    fn get_prev(&self) -> Option<Link<T>> {
         self.prev.clone()
     }
 
     /// Gets the next link from the Node via cloning.
-    fn get_next(&self) -> Link<T> {
+    fn get_next(&self) -> Option<Link<T>> {
         self.next.clone()
     }
 
@@ -168,21 +216,19 @@ impl<T> Node<T> {
 
     /// Creates a new Link containing the given data item.
     fn new_link(data: T) -> Link<T> {
-        Some(Rc::new(RefCell::new(Box::new(Node::new(data)))))
+        Rc::new(RefCell::new(Box::new(Node::new(data))))
     }
 }
 
 /// Wrapper struct for LinkedList to implement the Iterator trait. Yields cloned values contained in
 /// the nodes of the LinkedList.
 pub struct LinkedListIter<T> {
-    cursor: Link<T>,
+    cursor: Option<Link<T>>,
 }
 
 impl<T> LinkedListIter<T> {
-    fn new(cursor: &Link<T>) -> LinkedListIter<T> {
-        LinkedListIter {
-            cursor: cursor.clone(),
-        }
+    fn new(cursor: Option<Link<T>>) -> LinkedListIter<T> {
+        LinkedListIter { cursor }
     }
 }
 
@@ -190,11 +236,16 @@ impl<T> Iterator for LinkedListIter<T> {
     type Item = Rc<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Check if the iterator has been exhausted
-        self.cursor.as_ref()?;
-        // Get the data to yield and advance the iterator
-        let yield_data = self.cursor.as_ref().unwrap().borrow().get_data();
-        let next_node = self.cursor.as_ref().unwrap().borrow().get_next();
+        let next_node;
+        let yield_data;
+        match self.cursor.as_ref() {
+            None => return None,
+            Some(cursor) => {
+                let cursor = cursor.borrow();
+                yield_data = cursor.get_data();
+                next_node = cursor.get_next();
+            }
+        }
         self.cursor = next_node;
         Some(yield_data)
     }
@@ -209,7 +260,7 @@ mod tests {
     #[test]
     fn test_push_and_pop() {
         let mut new_list = LinkedList::<i32>::new();
-        new_list.push(0);
+        new_list.push(1);
         new_list.pop();
         assert_eq!(new_list.len(), 0);
     }
